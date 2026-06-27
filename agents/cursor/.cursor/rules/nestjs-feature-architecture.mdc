@@ -580,21 +580,35 @@ When BullMQ / `@nestjs/bullmq` is in stack:
 
 When an agent or contributor **finishes implementing** a feature, endpoint, service, or other non-trivial change:
 
-1. **Ask the user** whether they want test cases added for that work.
+1. **Check** whether **unit tests already exist** for that scope (e.g. `users.service.spec.ts` next to `users.service.ts`, or the project’s equivalent `*.test.ts` / `*.spec.ts` for the same module, action, or utility).
+
+### If unit tests already exist for that scope
+
+* **Update or extend** the existing test file(s) to cover the new or changed behavior.
+* Do **not** ask first — keeping tests in sync with code is expected when tests are already part of the project.
+* Do **not** create duplicate test files for the same unit — edit the existing spec.
+
+### If no unit tests exist for that scope
+
+1. **Ask the user** whether they want unit tests written for that work.
 2. **Do not** add tests automatically unless the user says yes.
-3. **Do not** skip the question — always ask at the end of the implementation.
+3. **Do not** skip the question.
 
 If the user **declines**, stop — no tests required for that task.
 
 If the user **accepts**:
 
 * Add tests only for the **completed scope**
-* Check whether tests **already exist** — extend instead of duplicating
-* Use **Jest** (Nest default) unless the repo uses Vitest
+* Use **Jest** (Nest default) unless the repo uses another runner
+* If no test runner is configured yet, **ask before installing** (see **Dependency Rules**)
 
-Example prompt to user:
+Example prompt when **no tests exist yet**:
 
-> Implementation is complete. Do you want me to add test cases for this feature?
+> Implementation is complete. There are no unit tests for this yet. Do you want me to add them?
+
+Example when **tests already exist** (no ask — proceed):
+
+> Updating `users.service.spec.ts` to cover the new validation paths.
 
 ## What to test (priority)
 
@@ -614,7 +628,8 @@ Example prompt to user:
 
 * Write trivial tests that only assert the obvious
 * Add tests for unchanged, unrelated code
-* Block delivery unless the user asked for tests upfront
+* Ask to add tests when a spec file already exists for that unit — **update it instead**
+* Block delivery unless the user asked for tests upfront (when none exist yet)
 
 ---
 
@@ -772,7 +787,7 @@ AI agents must:
 * On greenfield or inconsistent repos, **ask the user** for file/folder and data-type casing before adding files.
 * Keep controllers thin and logic in services.
 * Validate all HTTP input with DTOs and ValidationPipe.
-* **After completing a feature or command**, ask the user if they want test cases added (see **Testing Rules**).
+* **After completing a feature or command**, follow **Testing Rules**: **update existing unit tests** when a spec already exists for that scope; **ask the user** only when no unit tests exist yet.
 
 AI agents must never:
 
@@ -785,7 +800,8 @@ AI agents must never:
 * Install `@nestjs/jwt` and `jose` for the same auth flow without user approval.
 * Introduce a second ORM or competing architecture.
 * Introduce a **new** file, folder, or type casing style that conflicts with the established convention (or the user’s chosen convention).
-* Add tests without the user agreeing, or skip asking whether tests are wanted after finishing implementation.
+* Skip asking when **no unit tests exist** for the completed scope (unless the user already requested tests upfront).
+* Create a duplicate test file when a spec already exists for the same unit — update the existing file.
 * Run a different package manager than the one the repo uses.
 
 When uncertain:
