@@ -120,6 +120,10 @@ src/
 │   ├── interceptors/
 │   ├── pipes/
 │   ├── dto/                # Shared DTOs (pagination, api response)
+│   ├── database/           # Repository layer + DB adapters (when approved)
+│   │   ├── adapters/       # typeorm.adapter.ts, prisma.adapter.ts, …
+│   │   ├── repositories/   # BaseRepository, shared query types
+│   │   └── database.module.ts
 │   └── utils/
 ├── modules/                # Feature modules (preferred name)
 │   └── users/
@@ -153,6 +157,8 @@ modules/
     │   └── query-users.dto.ts
     ├── entities/
     │   └── user.entity.ts
+    ├── repositories/       # Feature repo — extends common BaseRepository (when layer exists)
+    │   └── users.repository.ts
     └── interfaces/
         └── user.interface.ts
 ```
@@ -215,7 +221,7 @@ Forbidden in controllers:
 Services own **business logic**:
 
 * Validate domain rules beyond DTO shape (uniqueness, state transitions, permissions)
-* Coordinate repositories, other services, and external APIs
+* Coordinate **feature repositories** (or approved data-access layer), other services, and external APIs — do **not** call ORM/Prisma directly when a repository layer exists
 * Throw Nest HTTP exceptions (`NotFoundException`, `ConflictException`, …) — the global exception filter maps them to the standard error envelope
 * Do **not** return `{ success: false, message, errors }` manually from services — throw and let the filter format the response
 * Use `@Injectable()` and constructor injection only — no manual `new Service()`
@@ -225,6 +231,7 @@ Never:
 
 * Put HTTP-specific types (`Request`, `Response`) in services unless abstracted
 * Bypass the module system with static imports of another feature’s private files
+* Use `@InjectRepository`, `PrismaClient`, or raw query builders in services when the project has a **common repository layer** — inject the feature repository instead
 
 ---
 
@@ -389,14 +396,16 @@ If **migrations are not set up** (empty/missing folder, only `synchronize: true`
 ## TypeORM (when in stack)
 
 * Entities in `modules/<feature>/entities/`
-* Use repositories via `@InjectRepository` in services
+* When **repository layer exists**: feature `*.repository.ts` uses `TypeOrmAdapter` — services do not inject `@InjectRepository` directly
+* When **no repository layer** (user declined or legacy): use `@InjectRepository` in feature repositories or services per existing repo pattern
 * Migrations in `database/migrations/` — never rely on `synchronize: true` in production
-* Relations defined on entities; avoid N+1 — use `relations` or QueryBuilder intentionally
+* Relations defined on entities; avoid N+1 — use `relations` or QueryBuilder intentionally (inside adapter/repository, not controllers)
 
 ## Prisma (when in stack)
 
 * Schema in `prisma/schema.prisma`
-* Inject `PrismaService` from a shared database module
+* When **repository layer exists**: feature repositories use `PrismaAdapter` — services do not inject `PrismaClient` directly
+* When **no repository layer**: inject `PrismaService` from a shared database module per existing pattern
 * Use transactions for multi-step writes
 * Run `prisma migrate` for schema changes — do not hand-edit production DB
 
@@ -405,6 +414,114 @@ If **migrations are not set up** (empty/missing folder, only `synchronize: true`
 * No raw SQL in controllers
 * Pagination at database level — not in-memory filtering of large lists
 * Soft deletes only when the domain requires them — match existing pattern
+* Prefer the **common repository layer** (when it exists) for list/filter/pagination queries — pass **query params**, let the **database adapter** build and execute the query
+
+---
+
+# Repository Layer Rules
+
+## Purpose
+
+A **common repository layer** in `common/database/` hides ORM-specific query code behind one interface. Services pass **standard query params**; a **database adapter** (TypeORM, Prisma, MikroORM, …) translates them into the correct query and runs it.
+
+**Do not implement this layer automatically.** **Ask the user first** with a clear message (template below).
+
+## When the layer already exists
+
+If `common/database/` (or the repo’s equivalent) is present:
+
+* Feature modules add **`modules/<feature>/repositories/<feature>.repository.ts`** extending or composing the shared **`BaseRepository`**
+* Services inject the feature repository — **never** duplicate ORM query logic in services
+* List/find endpoints pass validated **`QueryXDto`** (or shared **`ListQueryParams`**) into the repository — the adapter handles `page`, `limit`, `search`, `sort`, `order`, `filters`
+
+Example flow:
+
+```text
+Controller → QueryUsersDto
+  → UsersService.findAll(query)
+    → UsersRepository.findMany(query)
+      → DatabaseAdapter.buildListQuery(query)   // ORM-specific
+      → execute → { items, meta }
+```
+
+## When the layer does NOT exist
+
+Before writing persistence code that needs list/filter/pagination or repeated CRUD patterns:
+
+1. **Check** for `common/database/`, `BaseRepository`, or an existing adapter pattern.
+2. If **missing**, **stop and ask the user** — do not scaffold silently.
+3. Use the **ask template** below (adapt ORM name to the project).
+4. If the user **declines**, use the ORM directly in feature repositories/services following existing repo patterns — do not introduce a partial adapter without approval.
+5. If the user **approves**, scaffold the full layer first, then implement the feature.
+
+### Ask template (use verbatim structure — fill in ORM/feature)
+
+```text
+This project does not have a shared repository layer yet.
+
+I can add one under `common/database/` that:
+• Accepts standard query params (`page`, `limit`, `search`, `sort`, `order`, `filters`)
+• Auto-builds and runs queries via a **[TypeORM / Prisma / …] database adapter**
+• Exposes a `BaseRepository` for feature repos (e.g. `UsersRepository`) so services stay ORM-agnostic
+• Keeps pagination and filtering consistent across all endpoints
+
+Do you want me to implement this repository layer before adding data access for [feature/module]?
+```
+
+## Recommended layout (after user approval)
+
+```text
+common/database/
+├── database.module.ts
+├── adapters/
+│   ├── database-adapter.interface.ts   # buildListQuery, findById, create, update, delete
+│   ├── typeorm.adapter.ts              # when TypeORM
+│   └── prisma.adapter.ts               # when Prisma
+├── repositories/
+│   ├── base.repository.ts
+│   └── list-query.types.ts             # page, limit, search, sort, order, filters
+└── index.ts
+```
+
+Feature module:
+
+```text
+modules/users/repositories/users.repository.ts   # extends BaseRepository<User>
+```
+
+## Standard query params (repository input)
+
+Align with **Pagination & Query Rules** — repositories accept the same shape DTOs validate:
+
+```ts
+export interface ListQueryParams {
+  page?: number;
+  limit?: number;
+  search?: string;
+  sort?: string;
+  order?: 'asc' | 'desc';
+  filters?: Record<string, unknown>;
+}
+```
+
+The **adapter** maps `ListQueryParams` to ORM-native APIs (QueryBuilder, Prisma `findMany`, etc.). Controllers and services do **not** build SQL/Prisma objects directly when the layer is active.
+
+## Database adapter contract
+
+Each adapter implements the same interface, e.g.:
+
+* `findMany(entity, params: ListQueryParams)` → `{ items, meta }`
+* `findById(entity, id)`
+* `create(entity, data)` / `update(entity, id, data)` / `delete(entity, id)`
+
+Register the correct adapter in **`DatabaseModule`** based on the ORM the user chose. **One adapter per app** — do not mix adapters for the same database.
+
+## Do not
+
+* Create `common/database/` or adapters without **explicit user approval**
+* Bypass the repository layer with direct ORM calls in services once the layer is adopted
+* Implement a second competing query abstraction alongside an existing repository layer
+* Hard-code ORM-specific queries in controllers — keep them in adapter or feature repository
 
 ---
 
@@ -842,6 +959,7 @@ AI agents must:
 * **Ask before adding** anything listed under **Not in stack — ask before adding**.
 * **Ask which ORM, database, and API style** apply before designing persistence or new transport layers.
 * **Check for migrations** before entity/schema work — if missing, **ask the user** to set up migrations first (see **Database Rules**).
+* **Check for a common repository layer** before persistence/list-query work — if missing, **ask the user** with the repository ask template (see **Repository Layer Rules**); do not implement adapters without approval.
 * On greenfield **JWT auth**, **ask** whether to use **`@nestjs/jwt`** or **[jose](https://www.npmjs.com/package/jose)** before installing either.
 * Use the **project’s package manager** if initialized; if greenfield, **ask the user** which to use.
 * When installing **new approved** dependencies, use **`@latest` stable** and verify Nest compatibility.
@@ -863,7 +981,10 @@ AI agents must never:
 * Add dependencies without approval.
 * Enable `synchronize: true` in production or apply schema changes without migrations when none exist — **ask to set up migrations first**.
 * Install `@nestjs/jwt` and `jose` for the same auth flow without user approval.
-* Introduce a second ORM or competing architecture.
+* Use `@InjectRepository`, `PrismaClient`, or raw query builders directly in services when a **common repository layer** exists — use feature repositories.
+* Scaffold `common/database/`, adapters, or `BaseRepository` without **explicit user approval**.
+* Introduce a second ORM or competing query architecture.
+* Bypass an existing repository layer with ad-hoc ORM queries in services or controllers.
 * Introduce a **new** file, folder, or type casing style that conflicts with the established convention (or the user’s chosen convention).
 * Skip asking when **no unit tests exist** for the completed scope (unless the user already requested tests upfront).
 * Create a duplicate test file when a spec already exists for the same unit — update the existing file.
@@ -872,5 +993,5 @@ AI agents must never:
 When uncertain:
 
 * Follow current project patterns.
-* **Ask** before major changes — especially ORM/database choice, **migrations setup**, **JWT library (`@nestjs/jwt` vs jose)**, auth model, queue/cache addition, package manager (greenfield), file/data-type naming (greenfield or inconsistent repos), and new dependencies.
+* **Ask** before major changes — especially ORM/database choice, **repository layer setup**, **migrations setup**, **JWT library (`@nestjs/jwt` vs jose)**, auth model, queue/cache addition, package manager (greenfield), file/data-type naming (greenfield or inconsistent repos), and new dependencies.
 * Prioritize maintainability and consistency.

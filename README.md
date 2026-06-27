@@ -154,6 +154,7 @@ Use this if someone sent you the folder or you downloaded the **ZIP** from GitHu
 - Passport JWT auth, guards, filters, interceptors
 - **Global API response/error envelopes** (`TransformInterceptor` + `HttpExceptionFilter` on every endpoint until explicit opt-out)
 - ORM choice (TypeORM / Prisma — ask before adding)
+- Common repository layer + database adapters (ask before scaffold; query params auto-built per ORM)
 - Migrations setup (ask if missing before schema/entity changes)
 - JWT library choice (`@nestjs/jwt` vs [jose](https://www.npmjs.com/package/jose) — ask on greenfield auth)
 - ESLint, Prettier, Husky
