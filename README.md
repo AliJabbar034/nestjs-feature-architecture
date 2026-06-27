@@ -153,6 +153,8 @@ Use this if someone sent you the folder or you downloaded the **ZIP** from GitHu
 - DTOs + class-validator, Swagger/OpenAPI
 - Passport JWT auth, guards, filters, interceptors
 - ORM choice (TypeORM / Prisma — ask before adding)
+- Migrations setup (ask if missing before schema/entity changes)
+- JWT library choice (`@nestjs/jwt` vs [jose](https://www.npmjs.com/package/jose) — ask on greenfield auth)
 - ESLint, Prettier, Husky
 - File and data-type naming (detect existing convention; ask on greenfield)
 - AI agent guardrails

@@ -16,7 +16,7 @@ alwaysApply: true
 * HTTP: REST API (default); GraphQL only when explicitly in stack
 * Validation: **class-validator** + **class-transformer** on DTOs (default Nest pattern)
 * Configuration: `@nestjs/config` + validated env schema
-* Authentication: **Passport** + JWT (access + refresh rotation when required)
+* Authentication: **Passport** + JWT — default **`@nestjs/jwt`**; on greenfield auth work **ask** if the user prefers **[jose](https://www.npmjs.com/package/jose)** instead (see **Authentication Rules**)
 * API docs: **@nestjs/swagger** (OpenAPI)
 * Package Manager: follow **Package manager** rules below
 
@@ -289,7 +289,28 @@ Never trust client input. Always whitelist DTO fields (`whitelist: true`).
 
 # Authentication Rules
 
-Default: **Passport JWT** with `@nestjs/passport` and `@nestjs/jwt`.
+## JWT library — ask on greenfield auth
+
+When adding or wiring **JWT auth** and the project has **no established token library**:
+
+* **Ask the user** which approach to use:
+  * **`@nestjs/jwt`** (default Nest stack) — integrates with Passport, familiar Nest patterns
+  * **[jose](https://www.npmjs.com/package/jose)** — modern JOSE/JWT library (sign, verify, JWK, edge-friendly); use in a custom auth service/guard instead of `@nestjs/jwt`
+* If the repo **already uses** one of these, **follow it** — do not introduce the other without approval.
+* Do not install both `@nestjs/jwt` and `jose` for the same token flow unless explicitly requested.
+
+When the user chooses **jose**:
+
+* Centralize sign/verify in `common/auth/` or `modules/auth/` (e.g. `jwt.service.ts` using `jose`)
+* Keep guards thin — validate in guard, business rules in auth service
+* Still use Passport guards/strategies only if the user wants Passport; otherwise custom `JwtAuthGuard` calling `jose`
+
+When the user chooses **`@nestjs/jwt`** (default):
+
+* Use `@nestjs/passport`, `passport-jwt`, and `@nestjs/jwt` as usual
+* Register `JwtModule` with config from validated env
+
+## Default stack (when `@nestjs/jwt` is chosen or already in repo)
 
 Use:
 
@@ -300,7 +321,7 @@ Use:
 
 Requirements:
 
-* Validate JWT in a **guard**, not in every controller method
+* Validate JWT in a **guard** or auth service — not ad hoc in every controller method
 * Never log tokens or passwords
 * Hash passwords with **bcrypt** (or the algorithm already used in the repo)
 * Store refresh token hashes server-side when using refresh rotation
@@ -334,6 +355,38 @@ New Access Token
 # Database Rules
 
 **Ask** which ORM and database the project uses before writing persistence code.
+
+## Migrations — ask to set up if missing
+
+Before creating or changing entities/schema, check whether **migrations are configured**:
+
+| ORM | Migrations present when… |
+| --- | --- |
+| **TypeORM** | `database/migrations/` (or configured migrations path) exists **and** `synchronize: false` in production config |
+| **Prisma** | `prisma/migrations/` exists with at least an initial migration |
+
+If **migrations are not set up** (empty/missing folder, only `synchronize: true`, or schema changes with no migration history):
+
+1. **Ask the user** whether to set up migrations before proceeding.
+2. Explain briefly: migrations are required for safe schema changes in production.
+3. If the user **agrees**, scaffold the migration workflow for the chosen ORM (see below) before adding/changing entities.
+4. If the user **declines**, do not silently enable `synchronize: true` for production — document the limitation and stop short of destructive schema assumptions.
+
+**Do not** apply entity or Prisma schema changes that require DB updates until migrations are agreed and configured (or the repo already has a working migration flow).
+
+### TypeORM migration setup (when user agrees)
+
+* Set `synchronize: false` in production (and prefer false in dev once migrations exist)
+* Add `database/data-source.ts` (or project’s existing TypeORM CLI config)
+* Add npm scripts, e.g. `migration:generate`, `migration:run`, `migration:revert`
+* Store migrations in `database/migrations/`
+* Generate an initial migration from current entities if the DB already exists
+
+### Prisma migration setup (when user agrees)
+
+* Ensure `prisma/schema.prisma` and datasource are configured
+* Run `prisma migrate dev` for local initial migration (document the command for the user)
+* Commit `prisma/migrations/` — never rely on `db push` alone for production-bound projects unless the user explicitly chooses it
 
 ## TypeORM (when in stack)
 
@@ -714,6 +767,8 @@ AI agents must:
 * Verify **required stack tooling** exists (ESLint, Prettier, Husky, lint-staged, README) — install if missing.
 * **Ask before adding** anything listed under **Not in stack — ask before adding**.
 * **Ask which ORM, database, and API style** apply before designing persistence or new transport layers.
+* **Check for migrations** before entity/schema work — if missing, **ask the user** to set up migrations first (see **Database Rules**).
+* On greenfield **JWT auth**, **ask** whether to use **`@nestjs/jwt`** or **[jose](https://www.npmjs.com/package/jose)** before installing either.
 * Use the **project’s package manager** if initialized; if greenfield, **ask the user** which to use.
 * When installing **new approved** dependencies, use **`@latest` stable** and verify Nest compatibility.
 * **Inspect existing file and data-type naming** before creating project-owned paths or types; follow the repo’s convention when one exists.
@@ -729,6 +784,8 @@ AI agents must never:
 * Return raw entities with sensitive fields.
 * Skip DTO validation.
 * Add dependencies without approval.
+* Enable `synchronize: true` in production or apply schema changes without migrations when none exist — **ask to set up migrations first**.
+* Install `@nestjs/jwt` and `jose` for the same auth flow without user approval.
 * Introduce a second ORM or competing architecture.
 * Introduce a **new** file, folder, or type casing style that conflicts with the established convention (or the user’s chosen convention).
 * Add tests without the user agreeing, or skip asking whether tests are wanted after finishing implementation.
@@ -737,5 +794,5 @@ AI agents must never:
 When uncertain:
 
 * Follow current project patterns.
-* **Ask** before major changes — especially ORM/database choice, auth model, queue/cache addition, package manager (greenfield), file/data-type naming (greenfield or inconsistent repos), and new dependencies.
+* **Ask** before major changes — especially ORM/database choice, **migrations setup**, **JWT library (`@nestjs/jwt` vs jose)**, auth model, queue/cache addition, package manager (greenfield), file/data-type naming (greenfield or inconsistent repos), and new dependencies.
 * Prioritize maintainability and consistency.
