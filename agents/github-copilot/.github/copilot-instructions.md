@@ -191,15 +191,16 @@ Controllers handle **HTTP only**:
 * Guard and role decorators (`@UseGuards`, `@Roles`)
 * Swagger metadata (`@ApiTags`, `@ApiOperation`, `@ApiResponse`)
 * Parse params/query/body via DTOs and pipes
-* Return standardized response shape (see **API Response Format**)
+* Return **domain data** from handlers — the global **`TransformInterceptor`** wraps success responses (see **API Response Format**)
+* Throw from services; the global **`HttpExceptionFilter`** formats errors — do not hand-build error JSON in controllers
 * **No** database queries, **no** business rules, **no** direct ORM calls
 
 Preferred:
 
 ```ts
 @Post()
-create(@Body() dto: CreateUserDto): Promise<ApiResponse<UserResponseDto>> {
-  return this.usersService.create(dto);
+create(@Body() dto: CreateUserDto) {
+  return this.usersService.create(dto); // interceptor wraps → { success: true, data }
 }
 ```
 
@@ -217,7 +218,8 @@ Services own **business logic**:
 
 * Validate domain rules beyond DTO shape (uniqueness, state transitions, permissions)
 * Coordinate repositories, other services, and external APIs
-* Throw Nest HTTP exceptions (`NotFoundException`, `ConflictException`, …) or domain errors mapped by filters
+* Throw Nest HTTP exceptions (`NotFoundException`, `ConflictException`, …) — the global exception filter maps them to the standard error envelope
+* Do **not** return `{ success: false, message, errors }` manually from services — throw and let the filter format the response
 * Use `@Injectable()` and constructor injection only — no manual `new Service()`
 * One primary service per feature (`UsersService`); split into sub-services only when the file grows unwieldy
 
@@ -410,6 +412,10 @@ If **migrations are not set up** (empty/missing folder, only `synchronize: true`
 
 # API Response Format
 
+**Every HTTP endpoint** must return the same success and error envelope via **global interceptors and filters** — unless **explicitly opted out** (see below).
+
+## Standard envelopes
+
 Success:
 
 ```json
@@ -429,12 +435,68 @@ Error:
 }
 ```
 
-Implement via:
+* **`message`** — human-readable summary (validation failure, not found, conflict, etc.)
+* **`errors`** — optional array of field-level or detail objects (validation errors, error codes)
 
-* **`TransformInterceptor`** or response wrapper in `common/interceptors/`
-* **`HttpExceptionFilter`** in `common/filters/` for consistent error bodies
+## Required implementation — global interceptor + filter
 
-Do not return ad-hoc shapes per controller unless the repo already standardizes differently — in that case **follow the repo**.
+All endpoints share one response contract. Implement once in `common/` and register **globally**:
+
+```text
+common/
+├── interceptors/
+│   └── transform.interceptor.ts    # wraps success → { success: true, data }
+├── filters/
+│   └── http-exception.filter.ts    # maps exceptions → { success: false, message, errors }
+└── decorators/
+    └── skip-transform.decorator.ts # opt-out only when documented
+```
+
+Register in `main.ts` (or `AppModule` providers with `APP_INTERCEPTOR` / `APP_FILTER`):
+
+```ts
+app.useGlobalInterceptors(new TransformInterceptor());
+app.useGlobalFilters(new HttpExceptionFilter());
+```
+
+### If not set up yet
+
+Before adding new HTTP endpoints, check whether **`TransformInterceptor`** and **`HttpExceptionFilter`** (or equivalent) exist and are registered globally.
+
+If **missing**, **ask the user** whether to scaffold them first — do not add endpoints with ad-hoc `{ success, data }` / `{ success, message }` shapes in each controller.
+
+## Controller and service behavior (default — all endpoints)
+
+* **Controllers** return domain payloads only (`user`, `{ items, meta }`, `void`) — never manually wrap every route in `{ success: true, data }` unless the global interceptor is intentionally absent (legacy repo).
+* **Services** throw `HttpException` subclasses — never return error JSON objects.
+* **ValidationPipe** failures must map to the same error envelope via the exception filter (include `errors` from `class-validator` when available).
+* **Unknown errors** → filter returns `{ success: false, message }` without stack traces in production.
+
+Example flow:
+
+```text
+Controller → returns data
+  → TransformInterceptor → { success: true, data }
+
+Service → throws NotFoundException('User not found')
+  → HttpExceptionFilter → { success: false, message: 'User not found', errors: [] }
+```
+
+## Opt-out (explicit only)
+
+Some routes must **not** use the wrapper (webhooks, OAuth callbacks, raw proxy, file streams, third-party-compatible payloads).
+
+* Use a project decorator such as **`@SkipTransform()`** / **`@RawResponse()`** on that handler or controller.
+* Document in Swagger why the route is raw.
+* Do **not** opt out for normal CRUD/list/detail endpoints.
+
+If the repo already uses a different global contract, **follow the repo** — still apply one shared mechanism for all endpoints until explicitly overridden.
+
+## Do not
+
+* Build `{ success: true, data }` or `{ success: false, message, errors }` inline in each controller method.
+* Return different error shapes per module (e.g. `{ error: '...' }` on one route and `{ message: '...' }` on another).
+* Bypass the global filter/interceptor for standard REST endpoints without an documented opt-out decorator.
 
 ---
 
@@ -479,7 +541,8 @@ Do not expose internal/admin endpoints in public Swagger without `@ApiExcludeCon
 # Exception & Logging Rules
 
 * Use Nest built-in HTTP exceptions in services: `NotFoundException`, `BadRequestException`, `ConflictException`, `UnauthorizedException`, `ForbiddenException`
-* Map unknown errors in a global **`ExceptionFilter`** — do not leak stack traces in production
+* Let the global **`HttpExceptionFilter`** convert exceptions to `{ success: false, message, errors }` — do not catch and reformat in controllers unless transforming to a different HTTP status with the same envelope
+* Map unknown errors in the global filter — do not leak stack traces in production
 * Never use `console.log()` — use Nest **`Logger`** or the project’s logger (Pino, Winston)
 
 ```ts
@@ -527,11 +590,11 @@ findAll(@Query() query: QueryUsersDto) {
 | Type | Purpose | Location |
 | --- | --- | --- |
 | **Guard** | Auth, roles, throttling | `common/guards/` |
-| **Interceptor** | Response transform, logging, timeout | `common/interceptors/` |
+| **Interceptor** | **Global success wrapper** (`TransformInterceptor`), logging, timeout | `common/interceptors/` |
 | **Pipe** | Param validation, parsing | `common/pipes/` or global ValidationPipe |
-| **Filter** | Exception mapping | `common/filters/` |
+| **Filter** | **Global error envelope** (`HttpExceptionFilter`) | `common/filters/` |
 
-Register global pipes/filters/interceptors in `main.ts` or `AppModule` — not per-controller unless scoped intentionally.
+Register global pipes/filters/interceptors in `main.ts` or `AppModule` — **required** for consistent API responses on every endpoint. Per-controller interceptors/filters only when scoped intentionally — not as a substitute for the global contract.
 
 ---
 
@@ -788,6 +851,7 @@ AI agents must:
 * On greenfield or inconsistent repos, **ask the user** for file/folder and data-type casing before adding files.
 * Keep controllers thin and logic in services.
 * Validate all HTTP input with DTOs and ValidationPipe.
+* Ensure **every endpoint** uses the global **`TransformInterceptor`** + **`HttpExceptionFilter`** (or repo equivalent) for success/error envelopes — opt out only with an explicit decorator.
 * **After completing a feature or command**, follow **Testing Rules**: **update existing unit tests** when a spec already exists for that scope; **ask the user** only when no unit tests exist yet.
 
 AI agents must never:
@@ -796,6 +860,8 @@ AI agents must never:
 * Access `process.env` outside the config module.
 * Return raw entities with sensitive fields.
 * Skip DTO validation.
+* Return manual `{ success: true, data }` / `{ success: false, message, errors }` from controllers when global interceptor/filter are (or should be) registered — return domain data and throw exceptions instead.
+* Use a different error or success JSON shape on one endpoint than the rest of the API without `@SkipTransform()` / documented opt-out.
 * Add dependencies without approval.
 * Enable `synchronize: true` in production or apply schema changes without migrations when none exist — **ask to set up migrations first**.
 * Install `@nestjs/jwt` and `jose` for the same auth flow without user approval.
